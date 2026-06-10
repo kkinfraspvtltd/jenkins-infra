@@ -50,37 +50,47 @@ stages:
     - task: AzureCLI@2
       displayName: 'Validate ARM Template (what-if)'
       inputs:
-        azureSubscription: '$(azureServiceConnection)'
+        azureSubscription: 'kkinfraspvtltd'
         scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          echo "========================================="
-          echo "  Creating Resource Group if not exists  "
-          echo "========================================="
-          az group create \
-            --name $(resourceGroupName) \
-            --location $(location) \
-            --output table
+        scriptLocation: 'scriptPath'
+        scriptPath: '$(System.DefaultWorkingDirectory)/jenkins-infra/deploy.sh'
+        arguments: '$(SSH_PUBLIC_KEY)' # Pass the deployment secret cleanly
+        failOnStandardError: true # Forces task to fail immediately on error
 
-          echo "========================================="
-          echo "  Running ARM Template Validation        "
-          echo "========================================="
-          az deployment group validate \
-            --resource-group $(resourceGroupName) \
-            --template-file $(templateFile) \
-            --parameters $(parametersFile) \
-            --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
-            --output table
+    # - task: AzureCLI@2
+    #   displayName: 'Validate ARM Template (what-if)'
+    #   inputs:
+    #     azureSubscription: '$(azureServiceConnection)'
+    #     scriptType: 'bash'
+    #     scriptLocation: 'inlineScript'
+    #     inlineScript: |
+    #       echo "========================================="
+    #       echo "  Creating Resource Group if not exists  "
+    #       echo "========================================="
+    #       az group create \
+    #         --name $(resourceGroupName) \
+    #         --location $(location) \
+    #         --output table
 
-          echo "========================================="
-          echo "  Running What-If Deployment             "
-          echo "========================================="
-          az deployment group what-if \
-            --resource-group $(resourceGroupName) \
-            --template-file $(templateFile) \
-            --parameters $(parametersFile) \
-            --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
-            --output table
+    #       echo "========================================="
+    #       echo "  Running ARM Template Validation        "
+    #       echo "========================================="
+    #       az deployment group validate \
+    #         --resource-group $(resourceGroupName) \
+    #         --template-file $(templateFile) \
+    #         --parameters $(parametersFile) \
+    #         --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
+    #         --output table
+
+    #       echo "========================================="
+    #       echo "  Running What-If Deployment             "
+    #       echo "========================================="
+    #       az deployment group what-if \
+    #         --resource-group $(resourceGroupName) \
+    #         --template-file $(templateFile) \
+    #         --parameters $(parametersFile) \
+    #         --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
+    #         --output table
 
 # Stage 2: Deploy
 - stage: Deploy
