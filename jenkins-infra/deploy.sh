@@ -4,7 +4,7 @@ set -euo pipefail
 # Bind variables
 RESOURCE_GROUP="rg-jenkins-infra-dev"
 LOCATION="eastus"
-TEMPLATE_FILE="$(dirname "$0")/azuredeploy.json"
+TEMPLATE_FILE="$(dirname "$0")/arm-template/azuredeploy.json"
 SSH_PUBLIC_KEY="${1:-}"
 
 # Check for required SSH Key input parameter
