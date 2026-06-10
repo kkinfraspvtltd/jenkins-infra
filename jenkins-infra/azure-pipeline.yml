@@ -22,7 +22,7 @@ variables:
   resourceGroupName: 'jenkins-rg'
 
   # Azure region
-  location: 'eastus'
+  location: 'eastus2'
 
   # ARM template paths
   templateFile: '$(System.DefaultWorkingDirectory)/jenkins-infra/arm-template/azuredeploy.json'
