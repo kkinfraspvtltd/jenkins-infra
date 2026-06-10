@@ -1,65 +1,104 @@
-# Azure DevOps Pipeline — Deploy Jenkins VM via ARM Template
-
 trigger:
   branches:
     include:
       - main
   paths:
     include:
-      - jenkins-infra/arm-template/**
-      - jenkins-infra/Jenkins/**
-      - jenkins-infra/deploy.sh
+      - jenkins-infra/**
 
 pr:
   branches:
     include:
       - main
 
-# ── Variables ─────────────────────────────────────────────────────────
 variables:
   azureServiceConnection: 'azure-service-connection'
-  resourceGroupName: 'rg-jenkins-infra-dev'        # Must match deploy.sh
+  resourceGroupName: 'rg-jenkins-infra-dev'
   location: 'eastus2'
-  templateFile:   '$(System.DefaultWorkingDirectory)/jenkins-infra/arm-template/azuredeploy.json'
+  vmName: 'jenkins-vm'
+  vmSize: 'Standard_B2s'
+  adminUsername: 'azureuser'
+  templateFile: '$(System.DefaultWorkingDirectory)/jenkins-infra/arm-template/azuredeploy.json'
   parametersFile: '$(System.DefaultWorkingDirectory)/jenkins-infra/Jenkins/azuredeploy.parameters.json'
   deploymentName: 'jenkins-vm-deploy-$(Build.BuildId)'
 
-# ══════════════════════════════════════════════════════════════════════
-# Stage 1 — Validate (runs on every PR and push to main)
-# ══════════════════════════════════════════════════════════════════════
 stages:
+
+# ── Stage 1: Validate ────────────────────────────────────────────────
 - stage: Validate
-  displayName: 'Validate ARM Template'
+  displayName: '[1/2] Validate'
   jobs:
   - job: ValidateTemplate
-    displayName: 'Lint & Validate ARM Template'
+    displayName: 'ARM validate + what-if'
     pool:
       vmImage: 'ubuntu-latest'
     steps:
 
     - checkout: self
-      displayName: 'Checkout Repository'
 
     - task: AzureCLI@2
-      displayName: 'Validate ARM Template (what-if)'
+      displayName: 'Validate ARM template'
       inputs:
         azureSubscription: '$(azureServiceConnection)'
         scriptType: 'bash'
-        scriptLocation: 'scriptPath'
-        scriptPath: '$(System.DefaultWorkingDirectory)/jenkins-infra/deploy.sh'
-        arguments: '$(SSH_PUBLIC_KEY)'
+        scriptLocation: 'inlineScript'
         failOnStandardError: true
+        inlineScript: |
+          set -euo pipefail
 
-# ══════════════════════════════════════════════════════════════════════
-# Stage 2 — Deploy (only on push to main, not on PRs)
-# ══════════════════════════════════════════════════════════════════════
+          # ── Resource group ────────────────────────────────────────
+          EXISTS=$(az group exists --name $(resourceGroupName))
+          if [ "$EXISTS" = "true" ]; then
+            echo "[INFO] Resource group '$(resourceGroupName)' already exists — skipping create."
+          else
+            echo "[INFO] Creating resource group '$(resourceGroupName)' in $(location)..."
+            az group create --name $(resourceGroupName) --location $(location) --output none
+            echo "[INFO] Resource group created."
+          fi
+
+          # ── SKU availability check ────────────────────────────────
+          echo "[INFO] Checking SKU availability for $(vmSize) in $(location)..."
+          AVAILABLE=$(az vm list-skus \
+            --location $(location) \
+            --size $(vmSize) \
+            --query "[?restrictions[?reasonCode=='NotAvailableForSubscription'] | length(@) == \`0\`] | length(@)" \
+            --output tsv 2>/dev/null || echo "0")
+
+          if [ "$AVAILABLE" = "0" ]; then
+            echo "[WARN] $(vmSize) has capacity restrictions in $(location)."
+            echo "[INFO] Trying fallback SKU: Standard_D2s_v3..."
+            echo "##vso[task.setvariable variable=vmSize]Standard_D2s_v3"
+          else
+            echo "[INFO] SKU $(vmSize) is available in $(location)."
+          fi
+
+          # ── ARM validate ──────────────────────────────────────────
+          echo "[INFO] Running ARM preflight validation..."
+          az deployment group validate \
+            --resource-group $(resourceGroupName) \
+            --template-file $(templateFile) \
+            --parameters @$(parametersFile) \
+            --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" vmSize="$(vmSize)" \
+            --output none
+          echo "[INFO] ARM validation passed."
+
+          # ── What-if ───────────────────────────────────────────────
+          echo "[INFO] Running what-if to preview changes..."
+          az deployment group what-if \
+            --resource-group $(resourceGroupName) \
+            --template-file $(templateFile) \
+            --parameters @$(parametersFile) \
+            --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" vmSize="$(vmSize)" \
+            --output table
+
+# ── Stage 2: Deploy ──────────────────────────────────────────────────
 - stage: Deploy
-  displayName: 'Deploy Jenkins VM'
+  displayName: '[2/2] Deploy'
   dependsOn: Validate
   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
   jobs:
   - deployment: DeployVM
-    displayName: 'Deploy Azure VM with Jenkins'
+    displayName: 'Deploy Jenkins VM'
     pool:
       vmImage: 'ubuntu-latest'
     environment: 'jenkins-dev'
@@ -69,111 +108,195 @@ stages:
           steps:
 
           - checkout: self
-            displayName: 'Checkout Repository'
 
           - task: AzureCLI@2
-            displayName: 'Deploy ARM Template'
+            displayName: 'Deploy VM'
             inputs:
               azureSubscription: '$(azureServiceConnection)'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
+              failOnStandardError: true
               inlineScript: |
-                echo "========================================="
-                echo "  Ensure Resource Group exists           "
-                echo "========================================="
-                az group create \
-                  --name $(resourceGroupName) \
-                  --location $(location) \
-                  --output table
+                set -euo pipefail
 
-                echo "========================================="
-                echo "  Deploying Jenkins VM ARM Template      "
-                echo "========================================="
+                # ── Check if VM already exists ────────────────────
+                VM_STATE=$(az vm show \
+                  --resource-group $(resourceGroupName) \
+                  --name $(vmName) \
+                  --query "provisioningState" \
+                  --output tsv 2>/dev/null || echo "NotFound")
+
+                if [ "$VM_STATE" = "NotFound" ]; then
+                  echo "[INFO] VM '$(vmName)' not found — creating fresh deployment..."
+                  ACTION="Created"
+                else
+                  echo "[INFO] VM '$(vmName)' already exists (state: $VM_STATE) — updating deployment..."
+                  ACTION="Updated"
+                fi
+
+                # ── Run deployment ────────────────────────────────
                 az deployment group create \
                   --name $(deploymentName) \
                   --resource-group $(resourceGroupName) \
                   --template-file $(templateFile) \
                   --parameters @$(parametersFile) \
-                  --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
-                  --output table
+                  --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" vmSize="$(vmSize)" \
+                  --output none
 
-                echo ""
-                echo "========================================="
-                echo "  Deployment Outputs                     "
-                echo "========================================="
-                az deployment group show \
-                  --name $(deploymentName) \
-                  --resource-group $(resourceGroupName) \
-                  --query properties.outputs \
-                  --output table
+                echo "[INFO] Deployment complete — $ACTION."
 
           - task: AzureCLI@2
-            displayName: 'Wait for VM to be ready'
+            displayName: 'Wait for SSH'
             inputs:
               azureSubscription: '$(azureServiceConnection)'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
+              failOnStandardError: true
               inlineScript: |
-                echo "Fetching VM Public IP..."
-                VM_IP=$(az deployment group show \
-                  --name $(deploymentName) \
+                set -euo pipefail
+
+                VM_IP=$(az vm show \
                   --resource-group $(resourceGroupName) \
-                  --query "properties.outputs.vmPublicIP.value" \
+                  --name $(vmName) \
+                  --show-details \
+                  --query publicIps \
                   --output tsv)
 
-                if [ -z "$VM_IP" ] || [ "$VM_IP" = "null" ]; then
-                  echo "ERROR: Could not retrieve VM Public IP from deployment outputs." >&2
-                  echo "Check that azuredeploy.json has an 'outputs' block." >&2
-                  exit 1
-                fi
+                echo "[INFO] VM Public IP: $VM_IP"
+                echo "##vso[task.setvariable variable=VM_IP]$VM_IP"
 
-                echo "VM Public IP : $VM_IP"
-                echo "Jenkins URL  : http://$VM_IP:8080"
-                echo "##vso[task.setvariable variable=VM_IP;isOutput=true]$VM_IP"
-
-                echo "Waiting for SSH port 22 to be reachable (up to 3 minutes)..."
-                for i in {1..18}; do
+                echo "[INFO] Waiting for SSH on port 22..."
+                for i in $(seq 1 18); do
                   if nc -z -w 5 "$VM_IP" 22 2>/dev/null; then
-                    echo "VM SSH is reachable."
+                    echo "[INFO] SSH is reachable."
                     break
                   fi
-                  echo "Attempt $i/18 — waiting 10s..."
+                  echo "[INFO] Attempt $i/18 — not ready yet, retrying in 10s..."
                   sleep 10
                 done
 
           - task: AzureCLI@2
-            displayName: 'Print Summary'
+            displayName: 'Install Jenkins on VM'
             inputs:
               azureSubscription: '$(azureServiceConnection)'
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
+              failOnStandardError: false
               inlineScript: |
-                VM_IP=$(az deployment group show \
-                  --name $(deploymentName) \
+                set -euo pipefail
+
+                VM_IP=$(az vm show \
                   --resource-group $(resourceGroupName) \
-                  --query "properties.outputs.vmPublicIP.value" \
+                  --name $(vmName) \
+                  --show-details \
+                  --query publicIps \
                   --output tsv)
 
-                VM_FQDN=$(az deployment group show \
-                  --name $(deploymentName) \
+                # Check if Jenkins already installed via run-command
+                JENKINS_STATUS=$(az vm run-command invoke \
                   --resource-group $(resourceGroupName) \
-                  --query "properties.outputs.vmFQDN.value" \
+                  --name $(vmName) \
+                  --command-id RunShellScript \
+                  --scripts "systemctl is-active jenkins 2>/dev/null || echo notinstalled" \
+                  --query "value[0].message" \
+                  --output tsv 2>/dev/null || echo "notinstalled")
+
+                if echo "$JENKINS_STATUS" | grep -q "^active"; then
+                  echo "[INFO] Jenkins is already running on the VM — skipping install."
+                else
+                  echo "[INFO] Jenkins not found — installing via run-command..."
+                  az vm run-command invoke \
+                    --resource-group $(resourceGroupName) \
+                    --name $(vmName) \
+                    --command-id RunShellScript \
+                    --scripts "
+                      set -e
+                      echo '[INFO] Updating packages...'
+                      apt-get update -qq
+
+                      echo '[INFO] Installing Java 17...'
+                      apt-get install -y -qq openjdk-17-jdk curl git
+
+                      echo '[INFO] Adding Jenkins repo...'
+                      curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
+                        | tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+                      echo 'deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/' \
+                        | tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+
+                      echo '[INFO] Installing Jenkins...'
+                      apt-get update -qq
+                      apt-get install -y -qq jenkins
+
+                      echo '[INFO] Starting Jenkins...'
+                      systemctl enable jenkins
+                      systemctl start jenkins
+
+                      echo '[INFO] Opening firewall ports...'
+                      ufw allow 8080/tcp
+                      ufw allow 50000/tcp
+
+                      echo '[DONE] Jenkins installed successfully.'
+                    " \
+                    --output none
+                  echo "[INFO] Jenkins install complete."
+                fi
+
+          - task: AzureCLI@2
+            displayName: 'Summary'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              failOnStandardError: false
+              inlineScript: |
+                set -euo pipefail
+
+                VM_IP=$(az vm show \
+                  --resource-group $(resourceGroupName) \
+                  --name $(vmName) \
+                  --show-details \
+                  --query publicIps \
                   --output tsv)
 
-                echo "============================================"
-                echo "  DEPLOYMENT COMPLETE"
-                echo "============================================"
-                echo "  VM Public IP   : $VM_IP"
-                echo "  VM FQDN        : $VM_FQDN"
-                echo "  Jenkins URL    : http://$VM_IP:8080"
-                echo "  SSH Command    : ssh azureuser@$VM_IP"
-                echo "============================================"
+                VM_SIZE=$(az vm show \
+                  --resource-group $(resourceGroupName) \
+                  --name $(vmName) \
+                  --query "hardwareProfile.vmSize" \
+                  --output tsv)
+
+                VM_STATE=$(az vm show \
+                  --resource-group $(resourceGroupName) \
+                  --name $(vmName) \
+                  --query "provisioningState" \
+                  --output tsv)
+
+                OS_DISK=$(az vm show \
+                  --resource-group $(resourceGroupName) \
+                  --name $(vmName) \
+                  --query "storageProfile.osDisk.diskSizeGb" \
+                  --output tsv)
+
+                INIT_PASSWORD=$(az vm run-command invoke \
+                  --resource-group $(resourceGroupName) \
+                  --name $(vmName) \
+                  --command-id RunShellScript \
+                  --scripts "cat /var/lib/jenkins/secrets/initialAdminPassword 2>/dev/null || echo 'not-ready-yet'" \
+                  --query "value[0].message" \
+                  --output tsv 2>/dev/null | grep -v '\[stdout\]\|\[stderr\]' | tr -d '[:space:]' || echo "check-manually")
+
                 echo ""
-                echo "Next Steps:"
-                echo "  1. SSH into the VM:"
-                echo "     ssh -i ~/.ssh/jenkins_azure azureuser@$VM_IP"
-                echo "  2. Get the Jenkins initial password:"
-                echo "     sudo cat /var/lib/jenkins/secrets/initialAdminPassword"
-                echo "  3. Open Jenkins:"
-                echo "     http://$VM_IP:8080"
-                echo "============================================"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "  Jenkins VM — Deployment Summary"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "  Resource Group  : $(resourceGroupName)"
+                echo "  VM Name         : $(vmName)"
+                echo "  VM Size         : $VM_SIZE"
+                echo "  OS Disk         : ${OS_DISK}GB"
+                echo "  State           : $VM_STATE"
+                echo "  Public IP       : $VM_IP"
+                echo "  Jenkins URL     : http://$VM_IP:8080"
+                echo "  SSH             : ssh $(adminUsername)@$VM_IP"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "  Initial Admin Password:"
+                echo "  $INIT_PASSWORD"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

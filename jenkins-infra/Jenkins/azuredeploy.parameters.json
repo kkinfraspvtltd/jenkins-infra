@@ -12,7 +12,7 @@
       "value": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCiyIbh8MaMTM7sr9tsyAKSk5FNHJT9Z4opAfYdWzDMZjxVKnAtXJU0AXhmZnY8tOpK9dGPJxyni3xKPf8kbHlqqgW8K6uiHC8Ss/TM/fZSynRoOEHfEGhblGhhG6tnWyF0aidVwtPBvOsEk27D3nAZrWRsm2RX72ldQ82yDua4LR9y1uXxHkoNd/MHTGVg/uo0g/CXDhO85VY/XB8gOKqEQRwlOjbIYcURbY4GBjBx0/IdoTHnF0pi/hhGxNJgFOIxvaIzhfvnZBuV1CV82xukugs0KQpMRtBFlj9z0gvZsVX7TNaTwat3GlM51huxfuYdkGfm6d/JEpyP4iR+kQ+UORKFFE0c4VBnbexEccbYCooAcq5y4hAeO0/Wd1GavM2tafmTlmBSCj82rEagFzB+tcwt5YhcSJlvTiQVMiT2zJx5hA6NL0kK89M4JcOM88rXeh+Q/Y6PkB8NiHuirHoZHclfaXgEQyIT5fVcmFXKjFECG+PixSedwhvgAVVvn+Ct+SJkprxqJAybzOq9QPMhHf/QuS9loGkJijaJa1XH2e2RadqDxxeKUQjITsyK4+YI5aPzcwkTzbzPI9BJYeYGhJqCURHNTeOkyHBAMc4Vpkgrz36jkeW5zffP2k3qCMM0sMV0r2auukt31B96jsjRR9p5sxjdTWwpo3xfpo7LCQ== jenkins-azure-vm"
     },
     "location": {
-      "value": "eastus"
+      "value": "eastus2"
     },
     "vmSize": {
       "value": "Standard_B2s"
