@@ -1,0 +1,196 @@
+# Azure DevOps Pipeline — Deploy Jenkins VM via ARM Template
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - arm-template/**
+
+pr:
+  branches:
+    include:
+      - main
+
+# Variables
+variables:
+  # Azure Service Connection name (configure in ADO >> Project Settings >> Service Connections)
+  azureServiceConnection: 'azure-service-connection'
+
+  # Target Azure Resource Group
+  resourceGroupName: 'jenkins-rg'
+
+  # Azure region
+  location: 'eastus'
+
+  # ARM template paths
+  templateFile: 'arm-template/azuredeploy.json'
+  parametersFile: 'arm-template/azuredeploy.parameters.json'
+
+  # Deployment name (unique per run)
+  deploymentName: 'jenkins-vm-deploy-$(Build.BuildId)'
+
+# Stages
+stages:
+
+# Stage 1: Validate
+- stage: Validate
+  displayName: 'Validate ARM Template'
+  jobs:
+  - job: ValidateTemplate
+    displayName: 'Lint & Validate ARM Template'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+
+    - checkout: self
+      displayName: 'Checkout Repository'
+
+    - task: AzureCLI@2
+      displayName: 'Validate ARM Template (what-if)'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "========================================="
+          echo "  Creating Resource Group if not exists  "
+          echo "========================================="
+          az group create \
+            --name $(resourceGroupName) \
+            --location $(location) \
+            --output table
+
+          echo "========================================="
+          echo "  Running ARM Template Validation        "
+          echo "========================================="
+          az deployment group validate \
+            --resource-group $(resourceGroupName) \
+            --template-file $(templateFile) \
+            --parameters $(parametersFile) \
+            --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
+            --output table
+
+          echo "========================================="
+          echo "  Running What-If Deployment             "
+          echo "========================================="
+          az deployment group what-if \
+            --resource-group $(resourceGroupName) \
+            --template-file $(templateFile) \
+            --parameters $(parametersFile) \
+            --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
+            --output table
+
+# Stage 2: Deploy
+- stage: Deploy
+  displayName: 'Deploy Jenkins VM'
+  dependsOn: Validate
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployVM
+    displayName: 'Deploy Azure VM with Jenkins'
+    pool:
+      vmImage: 'ubuntu-latest'
+    environment: 'jenkins-dev'         # ADO Environment for approval gates
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - checkout: self
+            displayName: 'Checkout Repository'
+
+          - task: AzureCLI@2
+            displayName: 'Deploy ARM Template'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "========================================="
+                echo "  Deploying Jenkins VM ARM Template      "
+                echo "========================================="
+                az deployment group create \
+                  --name $(deploymentName) \
+                  --resource-group $(resourceGroupName) \
+                  --template-file $(templateFile) \
+                  --parameters $(parametersFile) \
+                  --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
+                  --output table
+
+                echo ""
+                echo "========================================="
+                echo "  Deployment Outputs                     "
+                echo "========================================="
+                az deployment group show \
+                  --name $(deploymentName) \
+                  --resource-group $(resourceGroupName) \
+                  --query properties.outputs \
+                  --output table
+
+          - task: AzureCLI@2
+            displayName: 'Wait for Jenkins to Start & Health Check'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Fetching VM Public IP..."
+                VM_IP=$(az deployment group show \
+                  --name $(deploymentName) \
+                  --resource-group $(resourceGroupName) \
+                  --query "properties.outputs.vmPublicIP.value" \
+                  --output tsv)
+
+                echo "VM Public IP: $VM_IP"
+                echo "Jenkins URL: http://$VM_IP:8080"
+
+                echo "Waiting for Jenkins to become available (up to 5 minutes)..."
+                for i in {1..30}; do
+                  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$VM_IP:8080 || true)
+                  if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "403" ]; then
+                    echo "Jenkins is UP! Status: $HTTP_STATUS"
+                    echo "##vso[task.setvariable variable=JENKINS_URL]http://$VM_IP:8080"
+                    break
+                  fi
+                  echo "Attempt $i/30 — Jenkins not ready yet (HTTP $HTTP_STATUS). Waiting 10s..."
+                  sleep 10
+                done
+
+          - task: AzureCLI@2
+            displayName: 'Print Summary'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                VM_IP=$(az deployment group show \
+                  --name $(deploymentName) \
+                  --resource-group $(resourceGroupName) \
+                  --query "properties.outputs.vmPublicIP.value" \
+                  --output tsv)
+
+                VM_FQDN=$(az deployment group show \
+                  --name $(deploymentName) \
+                  --resource-group $(resourceGroupName) \
+                  --query "properties.outputs.vmFQDN.value" \
+                  --output tsv)
+
+                echo "============================================"
+                echo "  DEPLOYMENT COMPLETE                   "
+                echo "============================================"
+                echo "  VM Public IP   : $VM_IP"
+                echo "  VM FQDN        : $VM_FQDN"
+                echo "  Jenkins URL    : http://$VM_IP:8080"
+                echo "  SSH Command    : ssh azureuser@$VM_IP"
+                echo "============================================"
+                echo ""
+                echo "Next Steps:"
+                echo "  1. SSH into the VM to get the Jenkins initial password:"
+                echo "     ssh azureuser@$VM_IP"
+                echo "     sudo cat /var/lib/jenkins/secrets/initialAdminPassword"
+                echo ""
+                echo "  2. Open Jenkins in browser:"
+                echo "     http://$VM_IP:8080"
+                echo "============================================"

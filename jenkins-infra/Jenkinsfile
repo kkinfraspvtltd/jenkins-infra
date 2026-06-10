@@ -1,0 +1,171 @@
+// ============================================================
+// Jenkinsfile
+// Sample Declarative Pipeline — CI/CD with Azure Integration
+// ============================================================
+
+pipeline {
+
+    agent any
+
+    // Tool Versions
+    tools {
+        jdk     'JDK17'
+        maven   'Maven3'
+    }
+
+    // Pipeline-level Environment Variables
+    environment {
+        APP_NAME        = 'my-app'
+        AZURE_RG        = 'jenkins-rg'
+        DOCKER_REGISTRY = 'your-acr-name.azurecr.io'
+
+        // Credentials stored in Jenkins Credential Store
+        AZURE_CREDS     = credentials('azure-service-principal')
+        DOCKER_CREDS    = credentials('acr-credentials')
+    }
+
+    // Pipeline Options
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+    }
+
+    // Triggers
+    triggers {
+        pollSCM('H/5 * * * *')   // Poll every 5 minutes (or use webhooks)
+    }
+
+    // Parameters
+    parameters {
+        choice(
+            name: 'DEPLOY_ENV',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Target deployment environment'
+        )
+        booleanParam(
+            name: 'SKIP_TESTS',
+            defaultValue: false,
+            description: 'Skip unit tests (not recommended)'
+        )
+    }
+
+    // Stages
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                    env.BUILD_TAG_FULL   = "${APP_NAME}:${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
+                }
+                echo "Branch  : ${env.BRANCH_NAME}"
+                echo "Commit  : ${env.GIT_COMMIT_SHORT}"
+                echo "Build # : ${env.BUILD_NUMBER}"
+            }
+        }
+
+        stage('Code Quality') {
+            parallel {
+                stage('Lint') {
+                    steps {
+                        echo 'Running lint checks...'
+                        sh 'mvn checkstyle:check || true'
+                    }
+                }
+                stage('Security Scan') {
+                    steps {
+                        echo 'Running OWASP dependency check...'
+                        sh 'mvn dependency-check:check || true'
+                    }
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo "Building ${BUILD_TAG_FULL}..."
+                sh 'mvn clean package -DskipTests=${SKIP_TESTS}'
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                }
+            }
+        }
+
+        stage('Test') {
+            when {
+                expression { params.SKIP_TESTS == false }
+            }
+            steps {
+                sh 'mvn test'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        stage('Docker Build & Push') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    sh """
+                        echo \$DOCKER_CREDS_PSW | docker login ${DOCKER_REGISTRY} \
+                          -u \$DOCKER_CREDS_USR --password-stdin
+
+                        docker build -t ${DOCKER_REGISTRY}/${BUILD_TAG_FULL} .
+                        docker push  ${DOCKER_REGISTRY}/${BUILD_TAG_FULL}
+
+                        docker tag  ${DOCKER_REGISTRY}/${BUILD_TAG_FULL} \
+                                    ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                        docker push ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Azure') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo "Deploying to environment: ${params.DEPLOY_ENV}"
+                    sh """
+                        az login --service-principal \
+                          -u \$AZURE_CREDS_USR \
+                          -p \$AZURE_CREDS_PSW \
+                          --tenant \$AZURE_CREDS_USR
+
+                        az deployment group create \
+                          --resource-group ${AZURE_RG} \
+                          --template-file arm-template/azuredeploy.json \
+                          --parameters arm-template/azuredeploy.parameters.json \
+                          --parameters environment=${params.DEPLOY_ENV}
+                    """
+                }
+            }
+        }
+
+    }
+
+    // Post Actions
+    post {
+        success {
+            echo "Pipeline succeeded! Build: ${env.BUILD_TAG_FULL}"
+        }
+        failure {
+            echo "Pipeline failed. Check logs above."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

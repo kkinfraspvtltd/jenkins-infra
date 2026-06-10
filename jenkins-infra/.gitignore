@@ -1,0 +1,24 @@
+# Secrets — never commit these
+*.pem
+*.key
+*.pfx
+id_rsa
+id_rsa.pub
+*.env
+.env.*
+secrets/
+
+# Azure params with real values
+azuredeploy.parameters.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
