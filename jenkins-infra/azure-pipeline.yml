@@ -19,10 +19,12 @@ variables:
   azureServiceConnection: 'azure-service-connection'
 
   # Target Azure Resource Group
-  resourceGroupName: 'jenkins-rg'
+  resourceGroupName: 'rg-jenkins-infra-dev'
 
   # Azure region
   location: 'eastus2'
+  
+  vmSize: 'Standard_B2ats_v2' 
 
   # ARM template paths
   templateFile: '$(System.DefaultWorkingDirectory)/jenkins-infra/arm-template/azuredeploy.json'
@@ -54,7 +56,7 @@ stages:
         scriptType: 'bash'
         scriptLocation: 'scriptPath'
         scriptPath: '$(System.DefaultWorkingDirectory)/jenkins-infra/deploy.sh'
-        arguments: '$(SSH_PUBLIC_KEY)' # Pass the deployment secret cleanly
+        arguments: '$(SSH_PUBLIC_KEY) $(vmSize)' # Pass the deployment secret cleanly
         failOnStandardError: true # Forces task to fail immediately on error
 
     # - task: AzureCLI@2

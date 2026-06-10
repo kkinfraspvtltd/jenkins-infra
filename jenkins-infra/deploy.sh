@@ -5,7 +5,10 @@ set -euo pipefail
 RESOURCE_GROUP="rg-jenkins-infra-dev"
 LOCATION="eastus2"
 TEMPLATE_FILE="$(dirname "$0")/arm-template/azuredeploy.json"
+
+# Bind inputs passed from pipeline arguments matrix
 SSH_PUBLIC_KEY="${1:-}"
+VM_SIZE="${2:-Standard_B2ats_v2}" # Falls back to v2 trial SKU if blank
 
 # Check for required SSH Key input parameter
 if [ -z "$SSH_PUBLIC_KEY" ]; then
@@ -24,4 +27,4 @@ echo "========================================="
 az deployment group what-if \
   --resource-group "$RESOURCE_GROUP" \
   --template-file "$TEMPLATE_FILE" \
-  --parameters vmName="jenkins-vm" vmSize="Standard_D2s_v5" sshPublicKey="$SSH_PUBLIC_KEY"
+  --parameters vmName="jenkins-vm" vmSize="$VM_SIZE" sshPublicKey="$SSH_PUBLIC_KEY"
