@@ -6,7 +6,7 @@ trigger:
       - main
   paths:
     include:
-      - arm-template/**
+      - jenkins-infra/arm-template/**
 
 pr:
   branches:
@@ -25,8 +25,8 @@ variables:
   location: 'eastus'
 
   # ARM template paths
-  templateFile: 'arm-template/azuredeploy.json'
-  parametersFile: 'arm-template/azuredeploy.parameters.json'
+  templateFile: '$(System.DefaultWorkingDirectory)/jenkins-infra/arm-template/azuredeploy.json'
+  parametersFile: '$(System.DefaultWorkingDirectory)/jenkins-infra/Jenkins/azuredeploy.parameters.json'
 
   # Deployment name (unique per run)
   deploymentName: 'jenkins-vm-deploy-$(Build.BuildId)'
@@ -50,7 +50,7 @@ stages:
     - task: AzureCLI@2
       displayName: 'Validate ARM Template (what-if)'
       inputs:
-        azureSubscription: 'azure-service-connection'
+        azureSubscription: '$(azureServiceConnection)'
         scriptType: 'bash'
         scriptLocation: 'scriptPath'
         scriptPath: '$(System.DefaultWorkingDirectory)/jenkins-infra/deploy.sh'
@@ -126,7 +126,7 @@ stages:
                   --resource-group $(resourceGroupName) \
                   --template-file $(templateFile) \
                   --parameters $(parametersFile) \
-                  --parameters sshPublicKey="$(SSH_PUBLIC_KEY)" \
+                  --parameters vmName="jenkins-vm" vmSize="Standard_B2ms" sshPublicKey="$(SSH_PUBLIC_KEY)" \
                   --output table
 
                 echo ""
