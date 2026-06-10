@@ -126,7 +126,7 @@ stages:
                   --resource-group $(resourceGroupName) \
                   --template-file $(templateFile) \
                   --parameters $(parametersFile) \
-                  --parameters vmName="jenkins-vm" vmSize="Standard_B2ms" sshPublicKey="$(SSH_PUBLIC_KEY)" \
+                  --parameters vmName="jenkins-vm" vmSize="Standard_D2s_v5" sshPublicKey="$(SSH_PUBLIC_KEY)" \
                   --output table
 
                 echo ""
