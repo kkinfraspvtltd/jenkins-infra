@@ -24,4 +24,5 @@ echo "========================================="
 az deployment group what-if \
   --resource-group "$RESOURCE_GROUP" \
   --template-file "$TEMPLATE_FILE" \
-  --parameters vmName="jenkins-vm" sshPublicKey="$SSH_PUBLIC_KEY"
+  # --parameters vmName="jenkins-vm" sshPublicKey="$SSH_PUBLIC_KEY"
+  --parameters vmName="jenkins-vm" vmSize="Standard_B2ms" sshPublicKey="$SSH_PUBLIC_KEY"
